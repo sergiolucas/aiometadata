@@ -1,0 +1,51 @@
+services:
+  aiometadata:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    tty: true
+    expose:
+      - 3232
+    environment:
+      - SERVICE_FQDN_AIOMETADATA_3232
+      - HOST_NAME=${HOST_NAME}
+      - PORT=3232
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - DATABASE_URI=sqlite://addon/data/db.sqlite
+      - REDIS_URL=redis://aiometadata-redis:6379
+      # ADMIN_KEY also signs the Trakt OAuth state when the app is PKCE-only.
+      - ADMIN_KEY=${ADMIN_KEY}
+      - BUILT_IN_TMDB_API_KEY=${BUILT_IN_TMDB_API_KEY}
+      - BUILT_IN_TVDB_API_KEY=${BUILT_IN_TVDB_API_KEY}
+      - BUILT_IN_FANART_API_KEY=${BUILT_IN_FANART_API_KEY}
+      - BUILT_IN_RPDB_API_KEY=${BUILT_IN_RPDB_API_KEY}
+      - BUILT_IN_MDBLIST_API_KEY=${BUILT_IN_MDBLIST_API_KEY}
+      - BUILT_IN_GEMINI_API_KEY=${BUILT_IN_GEMINI_API_KEY}
+      - TRAKT_CLIENT_ID=${TRAKT_CLIENT_ID}
+      - TRAKT_CLIENT_SECRET=${TRAKT_CLIENT_SECRET}
+      - TRAKT_REDIRECT_URI=${TRAKT_REDIRECT_URI}
+    volumes:
+      - aiometadata-data:/app/addon/data
+    depends_on:
+      aiometadata-redis:
+        condition: service_healthy
+
+  aiometadata-redis:
+    # Redis 8+ is mandatory: the addon uses HSETEX/HTTL and refuses to boot without them.
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --save 3600 1
+    volumes:
+      - aiometadata-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  aiometadata-data:
+  aiometadata-redis-data:
