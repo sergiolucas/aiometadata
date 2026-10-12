@@ -15,6 +15,7 @@ const SIMKL_STATE_HMAC_DOMAIN = 'aiometadata:simkl-oauth-state:v1';
 const MAL_PKCE_VERIFIER_DOMAIN = 'aiometadata:mal-pkce-verifier:v1';
 const SIMKL_V2_STATE_HMAC_DOMAIN = 'aiometadata:simkl-oauth2-state:v1';
 const SIMKL_V2_PKCE_VERIFIER_DOMAIN = 'aiometadata:simkl-pkce-verifier:v1';
+const TRAKT_PKCE_VERIFIER_DOMAIN = 'aiometadata:trakt-pkce-verifier:v1';
 
 function validateSigningInputs(
   provider: string,
@@ -143,6 +144,26 @@ export function verifyTraktOAuthState(
   now: number = Date.now()
 ): boolean {
   return verifySignedOAuthState(state, secret, TRAKT_STATE_HMAC_DOMAIN, now) !== null;
+}
+
+export function createTraktOAuthTransaction(
+  secret: string,
+  ttlMs: number,
+  now: number = Date.now()
+): { state: string; codeVerifier: string } {
+  const state = createSignedOAuthState('Trakt', secret, ttlMs, TRAKT_STATE_HMAC_DOMAIN, now);
+  return { state, codeVerifier: deriveCodeVerifier(state, secret, TRAKT_PKCE_VERIFIER_DOMAIN) };
+}
+
+export function verifyTraktOAuthTransaction(
+  state: unknown,
+  secret: string,
+  now: number = Date.now()
+): string | null {
+  const verifiedState = verifySignedOAuthState(state, secret, TRAKT_STATE_HMAC_DOMAIN, now);
+  return verifiedState && typeof state === 'string'
+    ? deriveCodeVerifier(state, secret, TRAKT_PKCE_VERIFIER_DOMAIN)
+    : null;
 }
 
 export function createAniListOAuthState(

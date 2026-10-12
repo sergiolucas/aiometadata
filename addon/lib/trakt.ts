@@ -30,14 +30,23 @@ export class TraktClient {
 
   constructor(clientId: string, clientSecret: string, redirectUri: string) {
     this.clientId = clientId;
-    this.clientSecret = clientSecret;
+    this.clientSecret = clientSecret || '';
     this.redirectUri = redirectUri;
+  }
+
+  /**
+   * Trakt deprecated the client secret on 2026-10-01: apps created since then
+   * sign users in with PKCE and are never issued one. Send the field only when
+   * the app actually has a secret, so legacy apps keep working unchanged.
+   */
+  private secretField(): Record<string, string> {
+    return this.clientSecret ? { client_secret: this.clientSecret } : {};
   }
 
   /**
    * Get authorization URL for OAuth flow
    */
-  getAuthorizationUrl(state?: string): string {
+  getAuthorizationUrl(state?: string, codeVerifier?: string): string {
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: this.clientId,
@@ -48,18 +57,26 @@ export class TraktClient {
       params.append('state', state);
     }
 
+    if (codeVerifier) {
+      const crypto = require('crypto');
+      const challenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+      params.append('code_challenge', challenge);
+      params.append('code_challenge_method', 'S256');
+    }
+
     return `https://trakt.tv/oauth/authorize?${params.toString()}`;
   }
 
   /**
    * Exchange authorization code for access token
    */
-  async exchangeCodeForToken(code: string): Promise<TraktTokens> {
+  async exchangeCodeForToken(code: string, codeVerifier?: string): Promise<TraktTokens> {
     try {
       const response = await httpPost('https://api.trakt.tv/oauth/token', {
         code,
         client_id: this.clientId,
-        client_secret: this.clientSecret,
+        ...this.secretField(),
+        ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
         redirect_uri: this.redirectUri,
         grant_type: 'authorization_code',
       }, {
@@ -101,7 +118,7 @@ export class TraktClient {
       const response = await httpPost('https://api.trakt.tv/oauth/token', {
         refresh_token: refreshToken,
         client_id: this.clientId,
-        client_secret: this.clientSecret,
+        ...this.secretField(),
         redirect_uri: this.redirectUri,
         grant_type: 'refresh_token',
       }, {
@@ -169,7 +186,7 @@ export class TraktClient {
         dispatcher: traktDispatcher,
         token: accessToken,
         client_id: this.clientId,
-        client_secret: this.clientSecret,
+        ...this.secretField(),
       });
     } catch (error) {
       logger.error('Failed to revoke token:', error);
