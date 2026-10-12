@@ -61,6 +61,8 @@ const {
   createSimklOAuthState,
   createSimklV2OAuthTransaction,
   createTraktOAuthState,
+  createTraktOAuthTransaction,
+  verifyTraktOAuthTransaction,
   verifyAniListOAuthState,
   verifyMalOAuthState,
   verifySimklOAuthState,
@@ -718,20 +720,33 @@ addon.get('/api/config/is-trusted/:uuid', configApi.isTrusted.bind(configApi));
 addon.post("/api/test-keys", testKeysRateLimitMiddleware, configApi.testApiKeys);
 
 // --- Trakt OAuth Routes ---
+// Trakt stopped issuing client secrets on 2026-10-01 (PKCE-only apps). The OAuth
+// state is HMAC-signed and the PKCE verifier is derived from it, so both need a
+// server-side secret: the client secret when the app is a legacy one, ADMIN_KEY
+// otherwise. Both sides of the flow must resolve it identically.
+function resolveTraktSigningSecret(): string {
+  return process.env.TRAKT_CLIENT_SECRET || process.env.ADMIN_KEY || '';
+}
+
 addon.get("/api/auth/trakt/authorize", async (req, res) => {
   try {
     const clientId = process.env.TRAKT_CLIENT_ID;
-    const clientSecret = process.env.TRAKT_CLIENT_SECRET;
+    const clientSecret = process.env.TRAKT_CLIENT_SECRET || '';
+    const signingSecret = resolveTraktSigningSecret();
     const redirectUri = normalizeRedirectUri(process.env.TRAKT_REDIRECT_URI || `${process.env.HOST_NAME}/api/auth/trakt/callback`);
-    
-    if (!clientId || !clientSecret) {
-      return res.status(500).json({ error: "Trakt OAuth not configured. Please set TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET environment variables." });
+
+    if (!clientId) {
+      return res.status(500).json({ error: "Trakt OAuth not configured. Please set the TRAKT_CLIENT_ID environment variable." });
     }
-    
+
+    if (!signingSecret) {
+      return res.status(500).json({ error: "Trakt OAuth needs a signing secret. Set ADMIN_KEY (or TRAKT_CLIENT_SECRET for legacy Trakt apps)." });
+    }
+
     const traktClient = new TraktClient(clientId, clientSecret, redirectUri);
-    
-    const state = createTraktOAuthState(clientSecret, TRAKT_OAUTH_STATE_TTL_MS);
-    const authUrl = traktClient.getAuthorizationUrl(state);
+
+    const { state, codeVerifier } = createTraktOAuthTransaction(signingSecret, TRAKT_OAUTH_STATE_TTL_MS);
+    const authUrl = traktClient.getAuthorizationUrl(state, codeVerifier);
     
     res.redirect(authUrl);
   } catch (error) {
@@ -743,12 +758,12 @@ addon.get("/api/auth/trakt/authorize", async (req, res) => {
 // Coalesce duplicate exchanges handled by this process only.
 const pendingTraktExchanges = new Map();
 
-async function exchangeWithRetry(traktClient, code, maxRetries = 3) {
+async function exchangeWithRetry(traktClient, code, codeVerifier, maxRetries = 3) {
   let lastError;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const tokens = await traktClient.exchangeCodeForToken(code);
+      const tokens = await traktClient.exchangeCodeForToken(code, codeVerifier);
       return tokens;
     } catch (error) {
       lastError = error;
@@ -812,8 +827,10 @@ addon.get("/api/auth/trakt/callback", async (req, res) => {
       }));
     }
 
-    const clientSecret = process.env.TRAKT_CLIENT_SECRET;
-    if (!state || !verifyTraktOAuthState(state, clientSecret)) {
+    const clientSecret = process.env.TRAKT_CLIENT_SECRET || '';
+    const signingSecret = resolveTraktSigningSecret();
+    const codeVerifier = signingSecret ? verifyTraktOAuthTransaction(state, signingSecret) : null;
+    if (!state || !codeVerifier) {
       return res.status(400).send(renderOAuthPage({
         provider: 'trakt',
         status: 'error',
@@ -850,7 +867,7 @@ addon.get("/api/auth/trakt/callback", async (req, res) => {
       process.env.TRAKT_REDIRECT_URI || `${process.env.HOST_NAME}/api/auth/trakt/callback`
     );
 
-    if (!clientId || !clientSecret) {
+    if (!clientId) {
       return res.status(500).send(renderOAuthPage({
         provider: 'trakt',
         status: 'warning',
@@ -862,7 +879,7 @@ addon.get("/api/auth/trakt/callback", async (req, res) => {
     const traktClient = new TraktClient(clientId, clientSecret, redirectUri);
 
     let tokens;
-    const exchangePromise = exchangeWithRetry(traktClient, code);
+    const exchangePromise = exchangeWithRetry(traktClient, code, codeVerifier);
     pendingTraktExchanges.set(code, exchangePromise);
     try {
       tokens = await exchangePromise;
